@@ -16,6 +16,8 @@ use {PointM, PointZ};
 
 #[cfg(feature = "geo-types")]
 use geo_types::{Coordinate, LineString};
+use std::ops::Index;
+use std::slice::SliceIndex;
 
 /// Rings composing a Polygon
 ///
@@ -53,6 +55,7 @@ use geo_types::{Coordinate, LineString};
 ///
 /// let ring = PolygonRing::Outer(points);
 /// assert_ne!(ring.points(), reversed_points.as_slice());
+/// assert_eq!(ring[0], Point::new(-12.0, 6.0));
 ///
 /// // Now the points will be reversed
 /// let polygon = Polygon::new(ring);
@@ -160,6 +163,14 @@ where
     }
 }
 
+impl<PointType, I: SliceIndex<[PointType]>> Index<I> for PolygonRing<PointType> {
+    type Output = I::Output;
+
+    fn index(&self, index: I) -> &Self::Output {
+        Index::index(self.points(), index)
+    }
+}
+
 impl<PointType: HasXY> From<Vec<PointType>> for PolygonRing<PointType> {
     fn from(p: Vec<PointType>) -> Self {
         match ring_type_from_points_ordering(&p) {
@@ -185,6 +196,26 @@ impl<PointType: HasXY> From<Vec<PointType>> for PolygonRing<PointType> {
 ///   **(this is done by the constructors if you do not do it yourself)**
 /// - The order of rings is not significant (p 13/34)
 /// - A polygon may have multiple [`Outer`] rings (p12/34)
+///
+///
+/// # geo-types
+///
+/// shapefile's Polygons can be converted to geo-types's `MultiPolygon<f64>`,
+/// but not geo-types's Polygon<f64> as they only allow polygons with one outer ring.
+///
+/// geo-types's `Polygon<f64>` and `MultiPolygon<f64>` can be converted to shapefile's Polygon
+///
+/// ```
+/// # #[cfg(feature = "geo-types")]
+/// # fn main() -> Result<(), shapefile::Error>{
+/// let mut polygons = shapefile::read_as::<_, shapefile::PolygonM>("tests/data/polygonm.shp")?;
+/// let geo_polygon: geo_types::MultiPolygon<f64> = polygons.pop().unwrap().into();
+/// let polygon = shapefile::PolygonZ::from(geo_polygon);
+/// # Ok(())
+/// # }
+/// # #[cfg(not(feature = "geo-types"))]
+/// # fn main() {}
+/// ```
 ///
 /// [`new`]: #method.new
 /// [`with_rings`]: #method.with_rings
