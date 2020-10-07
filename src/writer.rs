@@ -154,7 +154,8 @@ impl<T: Write> Writer<T> {
         }
         self.write_shapes(&shapes)?;
         if let Some(dbase_dest) = self.dbase_dest {
-            let dbase_writer = dbase::Writer::new(dbase_dest);
+            let dbase_writer = dbase::TableWriterBuilder::new()
+                .build_with_dest(dbase_dest);
             dbase_writer.write(&records)?;
         }
         Ok(())

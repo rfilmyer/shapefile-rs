@@ -77,6 +77,7 @@ use record::ReadableShape;
 
 const INDEX_RECORD_SIZE: usize = 2 * std::mem::size_of::<i32>();
 
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct ShapeIndex {
     pub offset: i32,
     pub record_size: i32,
@@ -137,12 +138,12 @@ impl<T: Read, S: ReadableShape> Iterator for ShapeIterator<T, S> {
 
 impl<T: Read, S: ReadableShape> FusedIterator for ShapeIterator<T, S> {}
 
-pub struct ShapeRecordIterator<T: Read, S: ReadableShape> {
+pub struct ShapeRecordIterator<'a, T: Read + Seek, S: ReadableShape> {
     shape_iter: ShapeIterator<T, S>,
-    dbf_reader: dbase::Reader<T>,
+    dbf_iter: dbase::RecordIterator<'a, T, dbase::Record>,
 }
 
-impl<T: Read, S: ReadableShape> Iterator for ShapeRecordIterator<T, S> {
+impl<T: Read + Seek, S: ReadableShape> Iterator for ShapeRecordIterator<'_, T, S> {
     type Item = Result<(S, dbase::Record), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -151,7 +152,7 @@ impl<T: Read, S: ReadableShape> Iterator for ShapeRecordIterator<T, S> {
             Ok(shp) => shp,
         };
 
-        let record = match self.dbf_reader.next()? {
+        let record = match self.dbf_iter.next()? {
             Err(e) => return Some(Err(Error::DbaseError(e))),
             Ok(rcd) => rcd,
         };
@@ -160,19 +161,20 @@ impl<T: Read, S: ReadableShape> Iterator for ShapeRecordIterator<T, S> {
     }
 }
 
-impl<T: Read, S: ReadableShape> FusedIterator for ShapeRecordIterator<T, S> {}
+impl<T: Read + Seek, S: ReadableShape> FusedIterator for ShapeRecordIterator<'_, T, S> {}
 
 //TODO Make it possible for the dbf source to be of a different dtype ?
 /// struct that reads the content of a shapefile
-pub struct Reader<T: Read> {
+// #[derive(Debug, Clone)] // wait for my PR on this one
+pub struct Reader<T: Read + Seek> {
     source: T,
     header: header::Header,
     shapes_index: Option<Vec<ShapeIndex>>,
     dbf_reader: Option<dbase::Reader<T>>,
 }
 
-impl<T: Read> Reader<T> {
-    /// Creates a new Reader from a source that implements the `Read` trait
+impl<T: Read + Seek> Reader<T> {
+    /// Creates a new Reader from a source that implements the `Read` and `Seek` traits
     ///
     /// The Shapefile header is read upon creation (but no reading of the Shapes is done)
     ///
@@ -278,7 +280,7 @@ impl<T: Read> Reader<T> {
 
     /// Read and return _only_ the records contained in the *.dbf* file
     pub fn read_records(self) -> Result<Vec<dbase::Record>, Error> {
-        let dbf_reader = self.dbf_reader.ok_or(Error::MissingDbf)?;
+        let mut dbf_reader = self.dbf_reader.ok_or(Error::MissingDbf)?;
         dbf_reader.read().or_else(|e| Err(Error::DbaseError(e)))
     }
 
@@ -363,20 +365,35 @@ impl<T: Read> Reader<T> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn iter_shapes_and_records_as<S: ReadableShape>(
+    pub fn iter_shapes_and_records_as<'a, S: ReadableShape>(
         mut self,
-    ) -> Result<ShapeRecordIterator<T, S>, Error> {
-        let maybe_dbf_reader = self.dbf_reader.take();
-        if let Some(dbf_reader) = maybe_dbf_reader {
-            let shape_iter = self.iter_shapes_as::<S>();
-            Ok(ShapeRecordIterator {
-                shape_iter,
-                dbf_reader,
-            })
-        } else {
-            Err(Error::MissingDbf)
-        }
+    ) -> Result<ShapeRecordIterator<'a, T, S>, Error> {
+        let mut dbf_reader = self.dbf_reader.take().ok_or(Error::MissingDbf)?; // Now dbf_reader is owned by the current function
+        let dbf_iter = dbf_reader.iter_records(); // but a dbase::RecordIterator only has a reference to it: `&'a mut Reader<T>`
+        Ok(ShapeRecordIterator{
+            shape_iter: self.iter_shapes_as::<S>(),
+            dbf_iter, // thus this is invalid because it "returns a value referencing data owned by the current function"
+        })
+
     }
+
+    // pub fn iter_shapes_and_records_as<'a, S: ReadableShape>(
+    //     self,
+    // ) -> Result<ShapeRecordIterator<'a, T, S>, Error> {
+    //
+    //     if let Some(_) = self.dbf_reader {
+    //         let shape_iter = self.iter_shapes_as::<S>();
+    //         let dbf_iter = self.dbf_reader
+    //             .ok_or(Error::MissingDbf)?
+    //             .iter_records();
+    //         Ok(ShapeRecordIterator {
+    //             shape_iter: self.iter_shapes_as::<S>(),
+    //             dbf_iter: self.dbf_reader.ok_or(),
+    //         })
+    //     } else {
+    //         Err(Error::MissingDbf)
+    //     }
+    // }
 
     /// Returns an iterator over the Shapes and their Records
     ///
@@ -401,8 +418,8 @@ impl<T: Read> Reader<T> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn iter_shapes_and_records(self) -> Result<ShapeRecordIterator<T, Shape>, Error> {
-        self.iter_shapes_and_records_as::<Shape>()
+    pub fn iter_shapes_and_records<'a>(self) -> Result<ShapeRecordIterator<'a, T, Shape>, Error> {
+        self.iter_shapes_and_records_as::<'a, Shape>()
     }
 
     /// Reads the index file from the source
@@ -422,7 +439,7 @@ impl<T: Read> Reader<T> {
     }
 }
 
-impl<T: Read> IntoIterator for Reader<T> {
+impl<T: Read + Seek> IntoIterator for Reader<T> {
     type Item = Result<Shape, Error>;
     type IntoIter = ShapeIterator<T, Shape>;
 
